@@ -10,7 +10,7 @@ const socketConnection = (displayName, roomId) => {
   if (socket && socket.connected) socket.disconnect();
 
   currentAuth = { displayName, roomId };
-  socket = io("http://localhost:8181", { auth: { displayName, roomId } });
+  socket = io("https://audiosharingbackendsih2025.onrender.com", { auth: { displayName, roomId } });
 
   return socket;
 };
