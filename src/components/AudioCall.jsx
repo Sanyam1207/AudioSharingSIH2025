@@ -24,7 +24,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
     const setup = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-         audio: { 
+          audio: {
             sampleSize: 16,
             channelCount: 1,
             sampleRate: 16000,
@@ -61,7 +61,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
               audioRef.current.srcObject = inboundStream;
             }
             inboundStream.addTrack(event.track);
-            audioRef.current.play().catch(() => {});
+            audioRef.current.play().catch(() => { });
           };
 
           // ICE candidate -> send to server
@@ -95,7 +95,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                 await pcRef.current.addIceCandidate(
                   new RTCIceCandidate(payload.candidate)
                 );
-              } catch {}
+              } catch { }
             }
           });
 
@@ -113,7 +113,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             ) {
               pcRef.current
                 .setRemoteDescription(myOffer.answer)
-                .catch(() => {});
+                .catch(() => { });
             }
           });
 
@@ -140,12 +140,25 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
             pc.ontrack = (ev) => {
-              console.log(
-                "teacher: remote track from student",
-                studentSocketId,
-                ev
-              );
+              console.log("teacher: remote track from student", studentSocketId, ev);
+
+              let audioElem = document.getElementById(`audio-${studentSocketId}`);
+              if (!audioElem) {
+                audioElem = document.createElement("audio");
+                audioElem.id = `audio-${studentSocketId}`;
+                audioElem.autoplay = true;
+                audioElem.playsInline = true;
+                document.body.appendChild(audioElem); // TEMP: directly append
+              }
+
+              let inboundStream = audioElem.srcObject;
+              if (!inboundStream) {
+                inboundStream = new MediaStream();
+                audioElem.srcObject = inboundStream;
+              }
+              inboundStream.addTrack(ev.track);
             };
+
 
             pc.onicecandidate = (event) => {
               if (event.candidate && socketRef.current) {
@@ -184,7 +197,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                             await pc.addIceCandidate(
                               new RTCIceCandidate(c)
                             );
-                          } catch {}
+                          } catch { }
                         });
                       }
                     }
@@ -225,7 +238,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                         for (const c of offererIceCandidates) {
                           try {
                             await pc.addIceCandidate(new RTCIceCandidate(c));
-                          } catch {}
+                          } catch { }
                         }
                       }
                     }
@@ -256,7 +269,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             if (pc) {
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              } catch {}
+              } catch { }
             }
           });
 
@@ -269,7 +282,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                   .getSenders()
                   .forEach((s) => s.track?.stop());
                 pcsRef.current[k].close();
-              } catch {}
+              } catch { }
             });
             pcsRef.current = {};
           });
@@ -297,13 +310,13 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             .getSenders()
             .forEach((sender) => sender.track?.stop());
           pcRef.current.close();
-        } catch {}
+        } catch { }
       }
       Object.values(pcsRef.current || {}).forEach((pc) => {
         try {
           pc.getSenders().forEach((s) => s.track?.stop());
           pc.close();
-        } catch {}
+        } catch { }
       });
 
       if (localStream) localStream.getTracks().forEach((t) => t.stop());
