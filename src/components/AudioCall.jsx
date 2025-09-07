@@ -1,28 +1,35 @@
+// components/AudioCall.jsx
 import { useEffect, useRef, useState } from "react";
 import socketConnection from "../utils/socketConnection";
 import peerConfiguration from "../utils/peerConfiguration";
 import ActionButtons from "./ActionButton";
 
-// role: 'teacher' | 'student'
+// props: displayName, roomId, role ('teacher' | 'student')
 const AudioCall = ({ displayName, roomId, role = "student" }) => {
   const [haveMedia, setHaveMedia] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(null);
   const [localStream, setLocalStream] = useState(null);
 
-  // For students: single RTCPeerConnection
+  // Student: single RTCPeerConnection
   const pcRef = useRef(null);
-  // For teacher: map of RTCPeerConnections keyed by student socket id
+  // Teacher: map of RTCPeerConnections keyed by student socket id
   const pcsRef = useRef({});
-
+  // Socket ref
   const socketRef = useRef(null);
-  // For student: an audio element to play teacher (or remote) audio
+  // Single audio element used for either: student plays teacher stream OR teacher plays mixed student stream
   const audioRef = useRef(null);
+
+  // Shared stream for teacher to mix all student tracks into one element
+  const sharedStreamRef = useRef(new MediaStream());
+  // Map to track which tracks came from which student (for removal on disconnect)
+  const studentTracksRef = useRef({}); // { [studentSocketId]: MediaStreamTrack[] }
 
   useEffect(() => {
     let mounted = true;
 
     const setup = async () => {
       try {
+        console.log("AudioCall setup:", { displayName, roomId, role });
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             sampleSize: 16,
@@ -30,9 +37,13 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             sampleRate: 16000,
           },
           video: false,
-
         });
-        if (!mounted) return;
+
+        if (!mounted) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
         setLocalStream(stream);
         setHaveMedia(true);
         setAudioEnabled(true);
@@ -40,6 +51,13 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
         // connect socket
         const socket = socketConnection(displayName, roomId);
         socketRef.current = socket;
+
+        socket.on("connect", () => {
+          console.log("socket connected", socket.id);
+        });
+        socket.on("disconnect", (reason) => {
+          console.log("socket disconnected", reason);
+        });
 
         // join/create room
         if (role === "teacher") socket.emit("createRoom", { roomId });
@@ -50,21 +68,28 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
           const pc = new RTCPeerConnection(peerConfiguration);
           pcRef.current = pc;
 
-          // add local tracks
+          // add local (student) tracks
           stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-          // remote track (teacher audio)
-          pc.ontrack = (event) => {
-            let inboundStream = audioRef.current.srcObject;
-            if (!inboundStream) {
-              inboundStream = new MediaStream();
-              audioRef.current.srcObject = inboundStream;
+          // remote track: teacher's audio
+          pc.ontrack = (ev) => {
+            const el = audioRef.current;
+            if (!el) return;
+            if (ev.streams && ev.streams[0]) {
+              el.srcObject = ev.streams[0];
+            } else {
+              if (!el.srcObject) el.srcObject = new MediaStream();
+              try {
+                el.srcObject.addTrack(ev.track);
+              } catch (e) {
+                console.warn("student addTrack fallback:", e);
+              }
             }
-            inboundStream.addTrack(event.track);
-            audioRef.current.play().catch(() => { });
+            el.play().catch((err) => {
+              console.warn("student audio autoplay blocked or failed:", err);
+            });
           };
 
-          // ICE candidate -> send to server
           pc.onicecandidate = (event) => {
             if (event.candidate && socketRef.current) {
               socketRef.current.emit("sendIceCandidateToSignalingServer", {
@@ -75,19 +100,18 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             }
           };
 
-          // Listen for answer from teacher
           socket.on("answerResponse", async (entireOffer) => {
             if (!pcRef.current) return;
             if (entireOffer.answer) {
               try {
                 await pcRef.current.setRemoteDescription(entireOffer.answer);
+                console.log("student: setRemoteDescription(answer) done");
               } catch (err) {
                 console.warn("student setRemoteDescription error:", err);
               }
             }
           });
 
-          // ICE candidates forwarded by server
           socket.on("receivedIceCandidateFromServer", async (payload) => {
             if (!payload || !payload.candidate) return;
             if (pcRef.current) {
@@ -95,38 +119,52 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                 await pcRef.current.addIceCandidate(
                   new RTCIceCandidate(payload.candidate)
                 );
-              } catch { }
+              } catch (e) {
+                console.warn("student addIceCandidate err", e);
+              }
             }
           });
 
-          // availableOffers (reconnect handling)
           socket.on("availableOffers", (offers) => {
             const myOffer = offers.find(
-              (o) =>
-                o.offererSocketId === socketRef.current.id && o.answer
+              (o) => o.offererSocketId === socketRef.current.id && o.answer
             );
-            if (
-              myOffer &&
-              myOffer.answer &&
-              pcRef.current &&
-              !pcRef.current.remoteDescription
-            ) {
-              pcRef.current
-                .setRemoteDescription(myOffer.answer)
-                .catch(() => { });
+            if (myOffer && myOffer.answer && pcRef.current && !pcRef.current.remoteDescription) {
+              pcRef.current.setRemoteDescription(myOffer.answer).catch((e) => {
+                console.warn("student availableOffers setRemoteDescription err", e);
+              });
             }
           });
 
           // create and send offer (student is offerer)
           if (pc.signalingState === "stable") {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit("newOffer", offer, (ack) => {
-              console.log("student: offer sent ack", ack);
-            });
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              socket.emit("newOffer", offer, (ack) => {
+                console.log("student: offer sent ack", ack);
+              });
+            } catch (err) {
+              console.warn("student createOffer error", err);
+            }
           }
         } else {
           // --- TEACHER FLOW ---
+
+          // remove all tracks for a specific student from shared stream
+          const removeStudentTracks = (id) => {
+            const tracks = studentTracksRef.current[id];
+            if (!tracks || !sharedStreamRef.current) return;
+            tracks.forEach((t) => {
+              try {
+                sharedStreamRef.current.removeTrack(t);
+                // optionally stop the track: t.stop?.();
+              } catch (e) {
+                console.warn("removeStudentTracks error", e);
+              }
+            });
+            delete studentTracksRef.current[id];
+          };
 
           // helper to create a pc for a particular student socket id
           const createPcForStudent = (studentSocketId) => {
@@ -136,29 +174,41 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             const pc = new RTCPeerConnection(peerConfiguration);
             pcsRef.current[studentSocketId] = pc;
 
-            // teacher's local tracks (mic) added to each pc
+            // add teacher's local mic tracks to each pc
             stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
             pc.ontrack = (ev) => {
-              console.log("teacher: remote track from student", studentSocketId, ev);
+              console.log("teacher: ontrack from student", studentSocketId, ev);
+              const shared = sharedStreamRef.current;
 
-              let audioElem = document.getElementById(`audio-${studentSocketId}`);
-              if (!audioElem) {
-                audioElem = document.createElement("audio");
-                audioElem.id = `audio-${studentSocketId}`;
-                audioElem.autoplay = true;
-                audioElem.playsInline = true;
-                document.body.appendChild(audioElem); // TEMP: directly append
+              // prefer full stream if provided
+              if (ev.streams && ev.streams[0]) {
+                ev.streams[0].getTracks().forEach((incomingTrack) => {
+                  if (!shared.getTracks().find((t) => t.id === incomingTrack.id)) {
+                    shared.addTrack(incomingTrack);
+                    studentTracksRef.current[studentSocketId] =
+                      studentTracksRef.current[studentSocketId] || [];
+                    studentTracksRef.current[studentSocketId].push(incomingTrack);
+                  }
+                });
+              } else {
+                const t = ev.track;
+                if (t && !shared.getTracks().find((x) => x.id === t.id)) {
+                  shared.addTrack(t);
+                  studentTracksRef.current[studentSocketId] =
+                    studentTracksRef.current[studentSocketId] || [];
+                  studentTracksRef.current[studentSocketId].push(t);
+                }
               }
 
-              let inboundStream = audioElem.srcObject;
-              if (!inboundStream) {
-                inboundStream = new MediaStream();
-                audioElem.srcObject = inboundStream;
+              // attach the combined shared stream to the single audio element
+              if (audioRef.current) {
+                audioRef.current.srcObject = shared;
+                audioRef.current.play().catch((err) => {
+                  console.warn("Autoplay blocked for shared audio:", err);
+                });
               }
-              inboundStream.addTrack(ev.track);
             };
-
 
             pc.onicecandidate = (event) => {
               if (event.candidate && socketRef.current) {
@@ -168,6 +218,36 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                   fromSocketId: socketRef.current.id,
                 });
               }
+            };
+
+            pc.onconnectionstatechange = () => {
+              console.log(
+                `pc[${studentSocketId}] connectionState:`,
+                pc.connectionState,
+                "signalingState:",
+                pc.signalingState
+              );
+              if (
+                pc.connectionState === "disconnected" ||
+                pc.connectionState === "failed" ||
+                pc.connectionState === "closed"
+              ) {
+                // cleanup that student's tracks
+                try {
+                  removeStudentTracks(studentSocketId);
+                } catch (e) {}
+              }
+            };
+
+            // ensure tracks are removed when pc.close is called
+            const oldClose = pc.close.bind(pc);
+            pc.close = () => {
+              try {
+                removeStudentTracks(studentSocketId);
+              } catch (e) {}
+              try {
+                oldClose();
+              } catch (e) {}
             };
 
             return pc;
@@ -194,10 +274,10 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                       if (Array.isArray(offererIceCandidates)) {
                         offererIceCandidates.forEach(async (c) => {
                           try {
-                            await pc.addIceCandidate(
-                              new RTCIceCandidate(c)
-                            );
-                          } catch { }
+                            await pc.addIceCandidate(new RTCIceCandidate(c));
+                          } catch (e) {
+                            console.warn("teacher addIceCandidate (availableOffers) err", e);
+                          }
                         });
                       }
                     }
@@ -238,7 +318,9 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
                         for (const c of offererIceCandidates) {
                           try {
                             await pc.addIceCandidate(new RTCIceCandidate(c));
-                          } catch { }
+                          } catch (e) {
+                            console.warn("teacher addIceCandidate (newOfferAwaiting) err", e);
+                          }
                         }
                       }
                     }
@@ -269,20 +351,31 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             if (pc) {
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              } catch { }
+              } catch (e) {
+                console.warn("teacher addIceCandidate (receivedIceCandidateFromServer) err", e);
+              }
             }
           });
 
           // room closed
           socket.on("roomClosed", ({ reason }) => {
             console.log("roomClosed", reason);
+            // remove all student tracks
+            Object.keys(studentTracksRef.current).forEach((id) => {
+              (studentTracksRef.current[id] || []).forEach((t) => {
+                try {
+                  sharedStreamRef.current.removeTrack(t);
+                  // t.stop?.();
+                } catch (e) {}
+              });
+            });
+            studentTracksRef.current = {};
+            // close all pcs
             Object.keys(pcsRef.current).forEach((k) => {
               try {
-                pcsRef.current[k]
-                  .getSenders()
-                  .forEach((s) => s.track?.stop());
+                pcsRef.current[k].getSenders().forEach((s) => s.track?.stop());
                 pcsRef.current[k].close();
-              } catch { }
+              } catch {}
             });
             pcsRef.current = {};
           });
@@ -306,18 +399,38 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
 
       if (pcRef.current) {
         try {
-          pcRef.current
-            .getSenders()
-            .forEach((sender) => sender.track?.stop());
+          pcRef.current.getSenders().forEach((sender) => sender.track?.stop());
           pcRef.current.close();
-        } catch { }
+        } catch {}
       }
+
       Object.values(pcsRef.current || {}).forEach((pc) => {
         try {
           pc.getSenders().forEach((s) => s.track?.stop());
           pc.close();
-        } catch { }
+        } catch {}
       });
+
+      // remove and stop all student tracks from shared stream
+      Object.keys(studentTracksRef.current).forEach((id) => {
+        (studentTracksRef.current[id] || []).forEach((t) => {
+          try {
+            sharedStreamRef.current.removeTrack(t);
+            t.stop?.();
+          } catch (e) {}
+        });
+      });
+      studentTracksRef.current = {};
+
+      // clear and stop shared stream tracks
+      try {
+        sharedStreamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop?.();
+          } catch {}
+        });
+      } catch {}
+      sharedStreamRef.current = new MediaStream();
 
       if (localStream) localStream.getTracks().forEach((t) => t.stop());
     };
@@ -336,8 +449,35 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
       <h2>
         Audio Call — {displayName || "(no name)"} ({role})
       </h2>
+
+      {/* Single audio element used by both roles:
+          - Student: plays teacher stream
+          - Teacher: plays mixed student stream (sharedStreamRef is attached in ontrack) */}
       <audio ref={audioRef} autoPlay playsInline controls />
+
+      {/* Action buttons */}
       <ActionButtons localStream={localStream} toggleAudio={toggleAudio} />
+
+      {/* Teacher-only button: single user gesture to satisfy autoplay policies */}
+      {role === "teacher" && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            onClick={() => {
+              // unmute + try to play the shared audio element
+              try {
+                const a = audioRef.current;
+                if (a) {
+                  a.muted = false;
+                  a.play().catch(() => {});
+                }
+              } catch {}
+            }}
+          >
+            Enable student audio (click once)
+          </button>
+        </div>
+      )}
+
       <div style={{ marginTop: 10 }}>
         <div>Room: {roomId}</div>
         <div>Microphone available: {haveMedia ? "Yes" : "No"}</div>

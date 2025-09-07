@@ -28,7 +28,11 @@ function App() {
           />
         </div>
         <div style={{ marginBottom: 10 }}>
-          <select value={role} onChange={(e) => setRole(e.target.value)} style={{ marginRight: 10 }}>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            style={{ marginRight: 10 }}
+          >
             <option value="student">Student</option>
             <option value="teacher">Teacher</option>
           </select>
@@ -47,7 +51,8 @@ function App() {
     );
   }
 
-  return <AudioCall userName={userName} role={role} roomId={roomId} />;
+  // IMPORTANT: pass displayName (AudioCall expects displayName)
+  return <AudioCall displayName={userName} role={role} roomId={roomId} />;
 }
 
 export default App;
