@@ -51,7 +51,7 @@ function App() {
     );
   }
 
-  // IMPORTANT: pass displayName (AudioCall expects displayName)
+  // IMPORTANT: AudioCall expects displayName prop
   return <AudioCall displayName={userName} role={role} roomId={roomId} />;
 }
 
