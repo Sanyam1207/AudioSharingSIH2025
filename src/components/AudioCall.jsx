@@ -1,7 +1,7 @@
 // components/AudioCall.jsx
 import { useEffect, useRef, useState } from "react";
 import socketConnection from "../utils/socketConnection";
-import peerConfiguration { attachIceDebugLogs } from "../utils/peerConfiguration";
+import peerConfiguration, { attachIceDebugLogs } from "../utils/peerConfiguration";
 import ActionButtons from "./ActionButton";
 
 // props: displayName, roomId, role ('teacher' | 'student')
