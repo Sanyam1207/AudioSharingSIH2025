@@ -1,7 +1,7 @@
 // components/AudioCall.jsx
 import { useEffect, useRef, useState } from "react";
 import socketConnection from "../utils/socketConnection";
-import peerConfiguration from "../utils/peerConfiguration";
+import peerConfiguration { attachIceDebugLogs } from "../utils/peerConfiguration";
 import ActionButtons from "./ActionButton";
 
 // props: displayName, roomId, role ('teacher' | 'student')
@@ -72,6 +72,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
         // --- STUDENT FLOW ---
         if (role !== "teacher") {
           const pc = new RTCPeerConnection(peerConfiguration);
+          attachIceDebugLogs(pc, role); // role = "teacher" or "student"
           pcRef.current = pc;
 
           // add local (student) tracks
@@ -205,6 +206,7 @@ const AudioCall = ({ displayName, roomId, role = "student" }) => {
             if (pcsRef.current[studentSocketId]) return pcsRef.current[studentSocketId].pc;
 
             const pc = new RTCPeerConnection(peerConfiguration);
+            attachIceDebugLogs(pc, role); // role = "teacher" or "student"
 
             // create a per-target mix destination for this target student (this destination will contain
             // all other students' audio; initially it's empty/silent)
